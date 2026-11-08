@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>透视挤压变换 - 插值方案对比</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #121214;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+            color: #eee;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+        }
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(25, 25, 32, 0.92);
+            padding: 18px;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.12);
+            width: 330px;
+        }
+        h2 {
+            margin: 0 0 12px 0;
+            font-size: 16px;
+            color: #4facfe;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .control-group {
+            margin-bottom: 12px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #aaa;
+        }
+        input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: #4facfe;
+        }
+        button {
+            background: #2c313a;
+            border: 1px solid rgba(255,255,255,0.1);
+            color: #fff;
+            padding: 7px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: 0.2s;
+        }
+        button:hover {
+            background: #4facfe;
+            border-color: #4facfe;
+        }
+        .primary-btn {
+            background: #4facfe;
+            font-weight: bold;
+            width: 100%;
+            border: none;
+            padding: 8px;
+            font-size: 12px;
+        }
+        .primary-btn:hover {
+            background: #00f2fe;
+        }
+        .btn-group {
+            display: flex;
+            gap: 5px;
+        }
+        .btn-group button {
+            flex: 1;
+        }
+        .btn-group button.active {
+            background: #4facfe;
+            border-color: #4facfe;
+            font-weight: bold;
+        }
+        .cam-status {
+            font-size: 11px;
+            background: rgba(79, 172, 254, 0.15);
+            color: #4facfe;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        #info-box {
+            font-size: 11px;
+            line-height: 1.6;
+            color: #aaa;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            padding-top: 10px;
+            margin-top: 10px;
+        }
+        .highlight {
+            color: #00f2fe;
+            font-weight: bold;
+        }
+        .warn {
+            color: #ffaa44;
+            font-weight: bold;
+        }
+        .legend {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 6px;
+            font-size: 11px;
+        }
+        .legend-bar {
+            height: 5px;
+            flex-grow: 1;
+            margin: 0 8px;
+            background: linear-gradient(to right, #00ffff, #ff007f);
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-panel">
+        <h2>
+            透视变换可视化 (M_p2o)
+            <span id="cam-status-badge" class="cam-status">正交相机</span>
+        </h2>
+
+        <!-- 插值模式选择 (新增重点) -->
+        <div class="control-group">
+            <label>插值方案 (对比核心)：</label>
+            <div class="btn-group">
+                <button id="btn-lerp-proj" class="active" onclick="setLerpMode('proj')">4D 射影矩阵插值<br>(保持绝对直线)</button>
+                <button id="btn-lerp-cart" onclick="setLerpMode('cart')">3D 笛卡尔插值<br>(连线弯曲鼓胀)</button>
+            </div>
+        </div>
+
+        <!-- 视角预设 -->
+        <div class="control-group">
+            <label>观察视角：</label>
+            <div class="btn-group">
+                <button onclick="setViewPreset('side')">侧视图 (ZY平面)</button>
+                <button onclick="setViewPreset('top')">俯视图 (ZX平面)</button>
+                <button onclick="setViewPreset('default')">3D斜视图</button>
+            </div>
+        </div>
+
+        <!-- 相机模式 -->
+        <div class="control-group">
+            <label>观察相机模式：</label>
+            <div class="btn-group">
+                <button id="btn-cam-ortho" class="active" onclick="switchCamera('ortho')">正交相机 (无畸变)</button>
+                <button id="btn-cam-persp" onclick="switchCamera('persp')">透视相机</button>
+            </div>
+        </div>
+
+        <!-- 采样模式 -->
+        <div class="control-group">
+            <label>采样方式 (4×4×8 = 128点网格)：</label>
+            <div class="btn-group">
+                <button id="btn-mode-post" class="active" onclick="setSampleMode('post')">变换后均匀采样</button>
+                <button id="btn-mode-pre" onclick="setSampleMode('pre')">变换前均匀采样</button>
+            </div>
+        </div>
+
+        <!-- 插值滑块 -->
+        <div class="control-group">
+            <label id="slider-label">挤压插值进度 (t): 0.00</label>
+            <input type="range" id="t-slider" min="0" max="1" step="0.001" value="0">
+        </div>
+
+        <div class="control-group">
+            <button id="play-btn" class="primary-btn" onclick="togglePlay()">自动播放挤压动画</button>
+        </div>
+
+        <div class="legend">
+            <span>近平面 (z_n)</span>
+            <div class="legend-bar"></div>
+            <span>远平面 (z_f)</span>
+        </div>
+
+        <div id="info-box">
+            <b>体验建议</b>：<br>
+            1. 点击<b>【侧视图】</b>；<br>
+            2. 将进度拖动到 <span class="highlight">t ≈ 0.5</span>；<br>
+            3. 在上方反复切换两种<b>【插值方案】</b>，观察纵向斜线在<b>“弯曲”</b>与<b>“笔直”</b>之间的跳变！
+        </div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        // 参数设定 (看向 -Z)
+        const zn = -2.0;    // 近平面
+        const zf = -10.0;   // 远平面
+        const zCenter = (zn + zf) / 2; // -6.0
+        const wn = 2.0;     // 近平面半宽
+        const hn = 1.5;     // 近平面半高
+        const wf = wn * (zf / zn); // 远平面半宽 = 10.0
+        const hf = hn * (zf / zn); // 远平面半高 = 7.5
+
+        const NX = 4, NY = 4, NZ = 8;
+        let sampleMode = 'post'; 
+        let lerpMode = 'proj'; // 'proj' (射影插值) 或 'cart' (笛卡尔插值)
+        let t = 0.0;
+        let isPlaying = false;
+
+        // 场景与渲染器
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const aspect = window.innerWidth / window.innerHeight;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+
+        // 默认正交相机
+        const orthoFrustumSize = 18;
+        const orthoCamera = new THREE.OrthographicCamera(
+            -orthoFrustumSize * aspect / 2,
+            orthoFrustumSize * aspect / 2,
+            orthoFrustumSize / 2,
+            -orthoFrustumSize / 2,
+            0.1,
+            100
+        );
+        orthoCamera.position.set(13, 8, 4);
+
+        const perspCamera = new THREE.PerspectiveCamera(50, aspect, 0.1, 100);
+        perspCamera.position.copy(orthoCamera.position);
+
+        let activeCamera = orthoCamera;
+
+        const controls = new THREE.OrbitControls(activeCamera, renderer.domElement);
+        controls.target.set(0, 0, zCenter);
+        controls.update();
+
+        // 坐标轴与原点
+        scene.add(new THREE.AxesHelper(3));
+        const originMarker = new THREE.Mesh(
+            new THREE.SphereGeometry(0.15, 16, 16),
+            new THREE.MeshBasicMaterial({ color: 0xffffff })
+        );
+        scene.add(originMarker);
+
+        // ---------------- 数学变换公式 ----------------
+        // 正向变换 (t=1 状态)
+        function forwardTransform(p) {
+            const z_prime = (zn + zf) - (zn * zf) / p.z;
+            const x_prime = p.x * (zn / p.z);
+            const y_prime = p.y * (zn / p.z);
+            return new THREE.Vector3(x_prime, y_prime, z_prime);
+        }
+
+        // 逆变换 (用于在长方体中均匀采样反求初态)
+        function inverseTransform(p_prime) {
+            const z = (zn * zf) / ((zn + zf) - p_prime.z);
+            const x = p_prime.x * (z / zn);
+            const y = p_prime.y * (z / zn);
+            return new THREE.Vector3(x, y, z);
+        }
+
+        // 4D 齐次射影矩阵插值：保持共线性，绝对不弯曲
+        function interpolateProjective(p0, curr_t) {
+            // M(t) = (1-t)*I + t*(-M_p2o)
+            // 取 -M_p2o 使得 W 恒大于 0，避免经过原点除以零
+            const X = p0.x * ((1 - curr_t) - curr_t * zn);
+            const Y = p0.y * ((1 - curr_t) - curr_t * zn);
+            const Z = p0.z * (1 - curr_t) - curr_t * (zn + zf) * p0.z + curr_t * (zn * zf);
+            const W = (1 - curr_t) * 1.0 - curr_t * p0.z;
+
+            return new THREE.Vector3(X / W, Y / W, Z / W);
+        }
+
+        // 3D 笛卡尔线性插值：直接坐标 lerp，导致共线性破坏（连线弯曲）
+        function interpolateCartesian(p0, p1, curr_t) {
+            return new THREE.Vector3().lerpVectors(p0, p1, curr_t);
+        }
+
+        // ---------------- 网格点阵生成 ----------------
+        let pointsData = [];
+        let gridEdges = [];
+        const pointsGroup = new THREE.Group();
+        scene.add(pointsGroup);
+        const sphereGeo = new THREE.SphereGeometry(0.08, 16, 16);
+        let gridLinesMesh = null;
+
+        function buildGridTopology() {
+            gridEdges = [];
+            for (let k = 0; k < NZ; k++) {
+                for (let j = 0; j < NY; j++) {
+                    for (let i = 0; i < NX; i++) {
+                        const idx = i + j * NX + k * NX * NY;
+                        if (i < NX - 1) gridEdges.push([idx, (i + 1) + j * NX + k * NX * NY]);
+                        if (j < NY - 1) gridEdges.push([idx, i + (j + 1) * NX + k * NX * NY]);
+                        if (k < NZ - 1) gridEdges.push([idx, i + j * NX + (k + 1) * NX * NY]); // 纵向连线
+                    }
+                }
+            }
+        }
+        buildGridTopology();
+
+        function generatePointsAndLines() {
+            while (pointsGroup.children.length > 0) pointsGroup.remove(pointsGroup.children[0]);
+            if (gridLinesMesh) {
+                scene.remove(gridLinesMesh);
+                gridLinesMesh.geometry.dispose();
+                gridLinesMesh.material.dispose();
+            }
+            pointsData = [];
+
+            for (let k = 0; k < NZ; k++) {
+                const u_z = k / (NZ - 1);
+                const color = new THREE.Color().lerpColors(new THREE.Color(0x00ffff), new THREE.Color(0xff007f), u_z);
+                const mat = new THREE.MeshBasicMaterial({ color: color });
+
+                for (let j = 0; j < NY; j++) {
+                    const u_y = (j / (NY - 1)) * 2 - 1;
+                    for (let i = 0; i < NX; i++) {
+                        const u_x = (i / (NX - 1)) * 2 - 1;
+                        let p0, p1;
+
+                        if (sampleMode === 'post') {
+                            const z_cuboid = zn + u_z * (zf - zn);
+                            p1 = new THREE.Vector3(u_x * wn, u_y * hn, z_cuboid);
+                            p0 = inverseTransform(p1);
+                        } else {
+                            const z_frustum = zn + u_z * (zf - zn);
+                            p0 = new THREE.Vector3(u_x * wn * (z_frustum / zn), u_y * hn * (z_frustum / zn), z_frustum);
+                            p1 = forwardTransform(p0);
+                        }
+
+                        const mesh = new THREE.Mesh(sphereGeo, mat);
+                        pointsGroup.add(mesh);
+                        pointsData.push({ p0, p1, mesh, color });
+                    }
+                }
+            }
+
+            // 生成网格线
+            const linePositions = new Float32Array(gridEdges.length * 6);
+            const lineColors = new Float32Array(gridEdges.length * 6);
+            let cPtr = 0;
+            for (let edge of gridEdges) {
+                const colorA = pointsData[edge[0]].color;
+                const colorB = pointsData[edge[1]].color;
+                lineColors[cPtr++] = colorA.r; lineColors[cPtr++] = colorA.g; lineColors[cPtr++] = colorA.b;
+                lineColors[cPtr++] = colorB.r; lineColors[cPtr++] = colorB.g; lineColors[cPtr++] = colorB.b;
+            }
+
+            const gridGeo = new THREE.BufferGeometry();
+            gridGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+            gridGeo.setAttribute('color', new THREE.BufferAttribute(lineColors, 3));
+            gridLinesMesh = new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.45
+            }));
+            scene.add(gridLinesMesh);
+
+            updatePointsPosition(t);
+        }
+
+        // ---------------- 外框线框 (沿 Z 轴细分为 7 段以反映真实弯曲) ----------------
+        // 为了在笛卡尔插值下真实反映棱边弯曲，我们将 4 条长棱边细分为与内部网格一样的分段
+        const borderSegments = 16;
+        let borderLinesMesh = null;
+
+        function createBorderFrame() {
+            if (borderLinesMesh) scene.remove(borderLinesMesh);
+
+            const borderGeo = new THREE.BufferGeometry();
+            // 4条纵棱各 NZ-1 段, 近远平面各 4 段 -> (4*(NZ-1) + 8) 条线段
+            const totalEdgeCount = 4 * (NZ - 1) + 8;
+            borderGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(totalEdgeCount * 6), 3));
+            borderLinesMesh = new THREE.LineSegments(borderGeo, new THREE.LineBasicMaterial({
+                color: 0x666677,
+                transparent: true,
+                opacity: 0.9
+            }));
+            scene.add(borderLinesMesh);
+        }
+        createBorderFrame();
+
+        function updateBorderFrame(curr_t) {
+            const pos = borderLinesMesh.geometry.attributes.position.array;
+            let ptr = 0;
+
+            // 角点索引映射到 pointsData：
+            // 4 条纵棱分别是四个角 (0,0), (NX-1,0), (0,NY-1), (NX-1,NY-1)
+            const corners = [
+                [0, 0],
+                [NX - 1, 0],
+                [0, NY - 1],
+                [NX - 1, NY - 1]
+            ];
+
+            // 1. 纵向长棱边
+            for (let c of corners) {
+                for (let k = 0; k < NZ - 1; k++) {
+                    const idxA = c[0] + c[1] * NX + k * NX * NY;
+                    const idxB = c[0] + c[1] * NX + (k + 1) * NX * NY;
+                    const pA = pointsData[idxA].mesh.position;
+                    const pB = pointsData[idxB].mesh.position;
+
+                    pos[ptr++] = pA.x; pos[ptr++] = pA.y; pos[ptr++] = pA.z;
+                    pos[ptr++] = pB.x; pos[ptr++] = pB.y; pos[ptr++] = pB.z;
+                }
+            }
+
+            // 2. 近远平面闭合环
+            const rings = [0, NZ - 1];
+            for (let k of rings) {
+                const ringCorners = [
+                    0 + 0 * NX + k * NX * NY,
+                    (NX - 1) + 0 * NX + k * NX * NY,
+                    (NX - 1) + (NY - 1) * NX + k * NX * NY,
+                    0 + (NY - 1) * NX + k * NX * NY
+                ];
+                for (let i = 0; i < 4; i++) {
+                    const pA = pointsData[ringCorners[i]].mesh.position;
+                    const pB = pointsData[ringCorners[(i + 1) % 4]].mesh.position;
+                    pos[ptr++] = pA.x; pos[ptr++] = pA.y; pos[ptr++] = pA.z;
+                    pos[ptr++] = pB.x; pos[ptr++] = pB.y; pos[ptr++] = pB.z;
+                }
+            }
+            borderLinesMesh.geometry.attributes.position.needsUpdate = true;
+        }
+
+        // ---------------- 位置更新函数 ----------------
+        function updatePointsPosition(curr_t) {
+            // 根据当前选择的方案计算点坐标
+            for (let item of pointsData) {
+                if (lerpMode === 'proj') {
+                    item.mesh.position.copy(interpolateProjective(item.p0, curr_t));
+                } else {
+                    item.mesh.position.copy(interpolateCartesian(item.p0, item.p1, curr_t));
+                }
+            }
+
+            // 更新内部网格细线
+            if (gridLinesMesh) {
+                const linePos = gridLinesMesh.geometry.attributes.position.array;
+                let ptr = 0;
+                for (let edge of gridEdges) {
+                    const posA = pointsData[edge[0]].mesh.position;
+                    const posB = pointsData[edge[1]].mesh.position;
+                    linePos[ptr++] = posA.x; linePos[ptr++] = posA.y; linePos[ptr++] = posA.z;
+                    linePos[ptr++] = posB.x; linePos[ptr++] = posB.y; linePos[ptr++] = posB.z;
+                }
+                gridLinesMesh.geometry.attributes.position.needsUpdate = true;
+            }
+
+            // 更新外边框
+            updateBorderFrame(curr_t);
+
+            document.getElementById('slider-label').innerText = `挤压插值进度 (t): ${curr_t.toFixed(3)}`;
+        }
+
+        generatePointsAndLines();
+
+        // ---------------- 控件切换逻辑 ----------------
+        function setLerpMode(mode) {
+            lerpMode = mode;
+            document.getElementById('btn-lerp-proj').classList.toggle('active', mode === 'proj');
+            document.getElementById('btn-lerp-cart').classList.toggle('active', mode === 'cart');
+            updatePointsPosition(t);
+        }
+
+        function setSampleMode(mode) {
+            sampleMode = mode;
+            document.getElementById('btn-mode-post').classList.toggle('active', mode === 'post');
+            document.getElementById('btn-mode-pre').classList.toggle('active', mode === 'pre');
+            generatePointsAndLines();
+        }
+
+        function switchCamera(type) {
+            const isOrtho = (type === 'ortho');
+            document.getElementById('btn-cam-ortho').classList.toggle('active', isOrtho);
+            document.getElementById('btn-cam-persp').classList.toggle('active', !isOrtho);
+            document.getElementById('cam-status-badge').innerText = isOrtho ? "正交相机" : "透视相机";
+
+            if (isOrtho) {
+                orthoCamera.position.copy(perspCamera.position);
+                orthoCamera.quaternion.copy(perspCamera.quaternion);
+
+                const dist = perspCamera.position.distanceTo(controls.target);
+                const vFov = (perspCamera.fov * Math.PI) / 180;
+                const visibleHeight = 2 * Math.tan(vFov / 2) * dist;
+                const curAspect = window.innerWidth / window.innerHeight;
+
+                orthoCamera.left = -visibleHeight * curAspect / 2;
+                orthoCamera.right = visibleHeight * curAspect / 2;
+                orthoCamera.top = visibleHeight / 2;
+                orthoCamera.bottom = -visibleHeight / 2;
+                orthoCamera.updateProjectionMatrix();
+
+                activeCamera = orthoCamera;
+            } else {
+                perspCamera.position.copy(orthoCamera.position);
+                perspCamera.quaternion.copy(orthoCamera.quaternion);
+                activeCamera = perspCamera;
+            }
+
+            controls.object = activeCamera;
+            controls.update();
+        }
+
+        function setViewPreset(preset) {
+            if (preset === 'side') {
+                activeCamera.position.set(16, 0, zCenter);
+            } else if (preset === 'top') {
+                activeCamera.position.set(0, 16, zCenter);
+            } else {
+                activeCamera.position.set(13, 8, 4);
+            }
+            controls.target.set(0, 0, zCenter);
+            activeCamera.lookAt(controls.target);
+            controls.update();
+        }
+
+        const slider = document.getElementById('t-slider');
+        slider.addEventListener('input', (e) => {
+            t = parseFloat(e.target.value);
+            updatePointsPosition(t);
+        });
+
+        function togglePlay() {
+            isPlaying = !isPlaying;
+            document.getElementById('play-btn').innerText = isPlaying ? "暂停动画" : "自动播放挤压动画";
+        }
+
+        // 渲染循环
+        let animSpeed = 0.005;
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (isPlaying) {
+                t += animSpeed;
+                if (t > 1.0) { t = 1.0; animSpeed = -animSpeed; }
+                else if (t < 0.0) { t = 0.0; animSpeed = -animSpeed; }
+                slider.value = t;
+                updatePointsPosition(t);
+            }
+
+            controls.update();
+            renderer.render(scene, activeCamera);
+        }
+
+        window.addEventListener('resize', () => {
+            const w = window.innerWidth, h = window.innerHeight;
+            const newAspect = w / h;
+            
+            perspCamera.aspect = newAspect;
+            perspCamera.updateProjectionMatrix();
+
+            orthoCamera.left = -orthoFrustumSize * newAspect / 2;
+            orthoCamera.right = orthoFrustumSize * newAspect / 2;
+            orthoCamera.top = orthoFrustumSize / 2;
+            orthoCamera.bottom = -orthoFrustumSize / 2;
+            orthoCamera.updateProjectionMatrix();
+
+            renderer.setSize(w, h);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
